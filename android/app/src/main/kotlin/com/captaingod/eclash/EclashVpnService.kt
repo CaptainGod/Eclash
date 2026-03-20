@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
@@ -63,11 +62,11 @@ class EclashVpnService : VpnService() {
 
     private fun getMihomoBinary(): File? {
         return try {
-            // 通过 PackageManager 显式获取 nativeLibDir，避免 Kotlin 类型推断问题
-            val appInfo: ApplicationInfo = packageManager.getApplicationInfo(
-                packageName, PackageManager.GET_META_DATA
-            )
-            File(appInfo.nativeLibDir, "libmihomo.so")
+            val appInfo = packageManager.getApplicationInfo(packageName, 0)
+            // 用反射读取 nativeLibDir，绕过 Kotlin 编译器的类型解析问题
+            val nativeDir = appInfo.javaClass.getField("nativeLibDir").get(appInfo) as? String
+                ?: return null
+            File(nativeDir, "libmihomo.so")
         } catch (e: Exception) {
             null
         }
