@@ -46,14 +46,22 @@ class AppState extends ChangeNotifier {
     try {
       final file = await _sub.getConfigFile();
       if (!file.existsSync()) return;
-      final doc = loadYaml(await file.readAsString());
-      final groups = doc['proxy-groups'];
-      if (groups is YamlList) {
-        _groupOrder = groups
-            .where((g) => g is YamlMap && g['name'] != null)
-            .map<String>((g) => g['name'].toString())
-            .toList();
-      }
+      final content = await file.readAsString();
+      try {
+        final doc = loadYaml(content);
+        final groups = doc['proxy-groups'];
+        if (groups is YamlList) {
+          _groupOrder = groups
+              .where((g) => g is YamlMap && g['name'] != null)
+              .map<String>((g) => g['name'].toString())
+              .toList();
+          return;
+        }
+      } catch (_) {}
+      // YAML 解析失败时降级：用正则提取顺序
+      _groupOrder = _extractGroupNamesFallback(content)
+          .map((g) => g.name)
+          .toList();
     } catch (_) {}
   }
 
@@ -180,11 +188,23 @@ class AppState extends ChangeNotifier {
         return;
       }
 
+      final content = await file.readAsString();
+
       dynamic doc;
       try {
-        doc = loadYaml(await file.readAsString());
-      } catch (e) {
-        _configError = 'YAML 解析失败：$e';
+        doc = loadYaml(content);
+      } catch (_) {
+        // yaml 包对 YAML 流式序列中某些 emoji（变体选择符、国旗序列等）存在解析缺陷。
+        // 降级为正则提取策略组名，成员列表留空，连接后由 REST API 填充。
+        final groups = _extractGroupNamesFallback(content);
+        if (groups.isNotEmpty) {
+          _groups = {for (final g in groups) g.name: g};
+          _groupOrder = groups.map((g) => g.name).toList();
+          _configError = '连接后可查看完整节点列表';
+          notifyListeners();
+          return;
+        }
+        _configError = '配置文件包含无法解析的字符，请连接后查看节点';
         notifyListeners();
         return;
       }
@@ -231,6 +251,36 @@ class AppState extends ChangeNotifier {
       _configError = '加载失败：$e';
       notifyListeners();
     }
+  }
+
+  /// YAML 解析失败时的降级方案：正则提取 proxy-groups 中的 name 字段。
+  /// 只取组名和类型，成员列表留空（连接后由 REST API 填充）。
+  List<ProxyGroup> _extractGroupNamesFallback(String content) {
+    // 定位 proxy-groups: 块，截取到下一个根级 key 为止
+    final start = content.indexOf('proxy-groups:');
+    if (start == -1) return [];
+    final section = content.substring(start);
+    final nextRoot = RegExp(r'^\S', multiLine: true)
+        .allMatches(section)
+        .skip(1)
+        .firstOrNull;
+    final block = nextRoot != null ? section.substring(0, nextRoot.start) : section;
+
+    // 匹配 name: <value>（支持引号和裸字符串，含 emoji）
+    final nameRe = RegExp(r'''name:\s*['"]?([^'",}\n]+?)['"]?\s*[,}]''');
+    final typeRe  = RegExp(r'''type:\s*['"]?(\w+)['"]?''');
+    final groups  = <ProxyGroup>[];
+
+    // 按行分组：每个 "- {" 或 "- name:" 开头为一个条目
+    for (final entry in block.split(RegExp(r'^\s*-\s*', multiLine: true))) {
+      final nameMatch = nameRe.firstMatch(entry);
+      if (nameMatch == null) continue;
+      final name = nameMatch.group(1)!.trim();
+      if (name.isEmpty) continue;
+      final type = typeRe.firstMatch(entry)?.group(1) ?? 'select';
+      groups.add(ProxyGroup(name: name, type: type, current: '', members: []));
+    }
+    return groups;
   }
 
   @override
