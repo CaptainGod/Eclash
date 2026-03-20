@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -39,7 +41,6 @@ class EclashVpnService : VpnService() {
         createNotificationChannel()
         startForeground(1, buildNotification())
 
-        // 建立 TUN 虚拟网卡
         vpnInterface = Builder()
             .setSession("Eclash")
             .addAddress("172.19.0.1", 30)
@@ -49,9 +50,8 @@ class EclashVpnService : VpnService() {
             .setMtu(1500)
             .establish()
 
-        // 从 nativeLibDir 获取 mihomo（Android 已将 libmihomo.so 解压到此目录，可直接执行）
-        val mihomoFile = File(applicationInfo.nativeLibDir, "libmihomo.so")
-        if (mihomoFile.exists()) {
+        val mihomoFile = getMihomoBinary()
+        if (mihomoFile != null && mihomoFile.exists()) {
             mihomoFile.setExecutable(true)
             mihomoProcess = ProcessBuilder(mihomoFile.absolutePath, "-f", configPath)
                 .redirectErrorStream(true)
@@ -59,6 +59,18 @@ class EclashVpnService : VpnService() {
         }
 
         isRunning = true
+    }
+
+    private fun getMihomoBinary(): File? {
+        return try {
+            // 通过 PackageManager 显式获取 nativeLibDir，避免 Kotlin 类型推断问题
+            val appInfo: ApplicationInfo = packageManager.getApplicationInfo(
+                packageName, PackageManager.GET_META_DATA
+            )
+            File(appInfo.nativeLibDir, "libmihomo.so")
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun stopVpn() {
