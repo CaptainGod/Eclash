@@ -221,9 +221,9 @@ class AppState extends ChangeNotifier {
       _groups = result;
       _groupOrder = order;
 
-      // 若所有组的成员都为空（proxy-providers 配置），在后台拉取实际节点
-      final needsPrefetch = result.values.every((g) => g.members.isEmpty);
-      if (needsPrefetch && result.isNotEmpty) {
+      // 若配置使用 proxy-providers，在后台拉取实际节点（组内 proxies 可能是其他组的引用，不能用 isEmpty 判断）
+      final hasProviders = doc['proxy-providers'] != null;
+      if (hasProviders && result.isNotEmpty) {
         notifyListeners();
         _prefetchProviderNodes(doc, result, order);
       } else {
