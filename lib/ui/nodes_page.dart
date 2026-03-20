@@ -100,27 +100,42 @@ class _GroupCard extends StatelessWidget {
         ),
         iconColor: Colors.white54,
         collapsedIconColor: Colors.white54,
-        children: group.members.map((node) {
-          final isSelected = node == group.current;
-          return ListTile(
-            dense: true,
-            title: Text(node,
-                style: TextStyle(
-                    color: isSelected ? Colors.blueAccent : Colors.white70,
-                    fontSize: 14)),
-            trailing: isSelected
-                ? const Icon(Icons.check_circle,
-                    color: Colors.blueAccent, size: 18)
-                : (isConnected
-                    ? const Icon(Icons.radio_button_unchecked,
-                        color: Colors.white24, size: 18)
-                    : null),
-            onTap: () {
-              onSelect(node);
-              Navigator.pop(context);
-            },
-          );
-        }).toList(),
+        children: group.members.isEmpty
+            ? [
+                ListTile(
+                  dense: true,
+                  leading: Icon(
+                    isConnected ? Icons.sync : Icons.cloud_download_outlined,
+                    color: Colors.white24,
+                    size: 16,
+                  ),
+                  title: Text(
+                    isConnected ? '节点加载中...' : '请先连接，节点由 proxy-providers 自动加载',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ),
+              ]
+            : group.members.map((node) {
+                final isSelected = node == group.current;
+                return ListTile(
+                  dense: true,
+                  title: Text(node,
+                      style: TextStyle(
+                          color: isSelected ? Colors.blueAccent : Colors.white70,
+                          fontSize: 14)),
+                  trailing: isSelected
+                      ? const Icon(Icons.check_circle,
+                          color: Colors.blueAccent, size: 18)
+                      : (isConnected
+                          ? const Icon(Icons.radio_button_unchecked,
+                              color: Colors.white24, size: 18)
+                          : null),
+                  onTap: () {
+                    onSelect(node);
+                    Navigator.pop(context);
+                  },
+                );
+              }).toList(),
       ),
     );
   }

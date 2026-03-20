@@ -27,6 +27,10 @@ class AppState extends ChangeNotifier {
   bool get hasConfig => _savedCode != null;
   String? get configError => _configError;
 
+  /// 是否有可离线预选的节点（proxy-providers 配置在连接前没有节点）。
+  bool get hasOfflineNodes =>
+      _groups.values.any((g) => g.members.isNotEmpty);
+
   List<ProxyGroup> get orderedGroups {
     if (_groupOrder.isEmpty) return _groups.values.toList();
     final result = <ProxyGroup>[];

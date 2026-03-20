@@ -112,7 +112,11 @@ class HomePage extends StatelessWidget {
                   ),
                   icon: const Icon(Icons.alt_route, color: Colors.white70),
                   label: Text(
-                    state.proxyEnabled ? '切换节点' : '选择节点（开启前生效）',
+                    state.proxyEnabled
+                        ? '切换节点'
+                        : state.hasOfflineNodes
+                            ? '选择节点（开启前生效）'
+                            : '查看策略组（连接后加载节点）',
                     style: const TextStyle(color: Colors.white, fontSize: 15),
                   ),
                   onPressed: () async {
