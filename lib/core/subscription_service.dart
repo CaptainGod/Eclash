@@ -41,23 +41,42 @@ class SubscriptionService {
     }
   }
 
-  /// 自动补全 mihomo 必要字段，确保 API 和 TUN 正常工作
   String _patchConfig(String yaml) {
     var result = yaml;
 
-    // 确保有 external-controller（节点切换 API）
+    // REST API（节点切换必须）
     if (!result.contains('external-controller')) {
       result += '\nexternal-controller: 127.0.0.1:9090\n';
     }
 
-    // 确保混合代理端口（供 Windows/macOS 系统代理使用）
+    // 混合端口（Windows/macOS 系统代理）
     if (!result.contains('mixed-port') && !result.contains('port:')) {
       result += 'mixed-port: 7890\n';
     }
 
-    // Android TUN 模式：允许局域网连接
-    if (!result.contains('allow-lan')) {
-      result += 'allow-lan: false\n';
+    // Android TUN 模式配置（mihomo 将接管路由）
+    if (!result.contains('tun:') && Platform.isAndroid) {
+      result += '''
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+''';
+    }
+
+    // DNS（确保解析正常）
+    if (!result.contains('dns:')) {
+      result += '''
+dns:
+  enable: true
+  listen: 0.0.0.0:53
+  nameserver:
+    - 8.8.8.8
+    - 1.1.1.1
+''';
     }
 
     return result;

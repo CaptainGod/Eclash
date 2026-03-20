@@ -111,6 +111,16 @@ class MihomoService {
     }
   }
 
+  Future<void> setMode(String mode) async {
+    try {
+      await http.patch(
+        Uri.parse('$_apiBase/configs'),
+        headers: _headers,
+        body: jsonEncode({'mode': mode}),
+      );
+    } catch (_) {}
+  }
+
   Future<void> _enableSystemProxy() async {
     if (Platform.isMacOS) {
       await Process.run('networksetup',
