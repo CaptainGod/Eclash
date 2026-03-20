@@ -46,22 +46,14 @@ class AppState extends ChangeNotifier {
     try {
       final file = await _sub.getConfigFile();
       if (!file.existsSync()) return;
-      final content = await file.readAsString();
-      try {
-        final doc = loadYaml(content);
-        final groups = doc['proxy-groups'];
-        if (groups is YamlList) {
-          _groupOrder = groups
-              .where((g) => g is YamlMap && g['name'] != null)
-              .map<String>((g) => g['name'].toString())
-              .toList();
-          return;
-        }
-      } catch (_) {}
-      // YAML 解析失败时降级：用正则提取顺序
-      _groupOrder = _extractGroupNamesFallback(content)
-          .map((g) => g.name)
-          .toList();
+      final doc = loadYaml(await file.readAsString());
+      final groups = doc['proxy-groups'];
+      if (groups is YamlList) {
+        _groupOrder = groups
+            .where((g) => g is YamlMap && g['name'] != null)
+            .map<String>((g) => g['name'].toString())
+            .toList();
+      }
     } catch (_) {}
   }
 
@@ -89,7 +81,6 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    // ── 连接流程 ──────────────────────────────────────────────
     _setLoading(true, '正在连接...');
     final ok = await _mihomo.start();
     if (!ok) {
@@ -101,7 +92,7 @@ class AppState extends ChangeNotifier {
     bool apiReady = false;
     for (var i = 0; i < 15; i++) {
       await Future.delayed(const Duration(seconds: 1));
-      if (!await _mihomo.checkRunning()) break; // 进程已崩溃，提前退出
+      if (!await _mihomo.checkRunning()) break;
       if (await _mihomo.isApiReady()) { apiReady = true; break; }
     }
 
@@ -111,16 +102,14 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    // API 就绪 → 更新连接状态，放开按钮，后台继续加载节点
     _proxyEnabled = true;
     await _syncMode();
     _setLoading(false, '已连接 · 加载节点...');
     _startHealthCheck();
-    _pollForNodes(); // 不 await，后台加载 proxy-providers 节点
+    _pollForNodes();
   }
 
   /// 后台轮询节点（proxy-providers 需要联网拉取，可能需要 5~30s）。
-  /// 每秒查一次 REST API，最多等 60s。
   Future<void> _pollForNodes() async {
     for (var i = 0; i < 60; i++) {
       if (!_proxyEnabled) return;
@@ -132,7 +121,6 @@ class AppState extends ChangeNotifier {
       }
       await Future.delayed(const Duration(seconds: 1));
     }
-    // 超时：连接仍有效，但节点始终未出现（网络问题或配置无 proxy-providers）
     if (_proxyEnabled) {
       _statusMessage = '已连接';
       notifyListeners();
@@ -188,23 +176,11 @@ class AppState extends ChangeNotifier {
         return;
       }
 
-      final content = await file.readAsString();
-
       dynamic doc;
       try {
-        doc = loadYaml(content);
-      } catch (_) {
-        // yaml 包对 YAML 流式序列中某些 emoji（变体选择符、国旗序列等）存在解析缺陷。
-        // 降级为正则提取策略组名，成员列表留空，连接后由 REST API 填充。
-        final groups = _extractGroupNamesFallback(content);
-        if (groups.isNotEmpty) {
-          _groups = {for (final g in groups) g.name: g};
-          _groupOrder = groups.map((g) => g.name).toList();
-          _configError = '连接后可查看完整节点列表';
-          notifyListeners();
-          return;
-        }
-        _configError = '配置文件包含无法解析的字符，请连接后查看节点';
+        doc = loadYaml(await file.readAsString());
+      } catch (e) {
+        _configError = 'YAML 解析失败：$e';
         notifyListeners();
         return;
       }
@@ -251,36 +227,6 @@ class AppState extends ChangeNotifier {
       _configError = '加载失败：$e';
       notifyListeners();
     }
-  }
-
-  /// YAML 解析失败时的降级方案：正则提取 proxy-groups 中的 name 字段。
-  /// 只取组名和类型，成员列表留空（连接后由 REST API 填充）。
-  List<ProxyGroup> _extractGroupNamesFallback(String content) {
-    // 定位 proxy-groups: 块，截取到下一个根级 key 为止
-    final start = content.indexOf('proxy-groups:');
-    if (start == -1) return [];
-    final section = content.substring(start);
-    final nextRoot = RegExp(r'^\S', multiLine: true)
-        .allMatches(section)
-        .skip(1)
-        .firstOrNull;
-    final block = nextRoot != null ? section.substring(0, nextRoot.start) : section;
-
-    // 匹配 name: <value>（支持引号和裸字符串，含 emoji）
-    final nameRe = RegExp(r'''name:\s*['"]?([^'",}\n]+?)['"]?\s*[,}]''');
-    final typeRe  = RegExp(r'''type:\s*['"]?(\w+)['"]?''');
-    final groups  = <ProxyGroup>[];
-
-    // 按行分组：每个 "- {" 或 "- name:" 开头为一个条目
-    for (final entry in block.split(RegExp(r'^\s*-\s*', multiLine: true))) {
-      final nameMatch = nameRe.firstMatch(entry);
-      if (nameMatch == null) continue;
-      final name = nameMatch.group(1)!.trim();
-      if (name.isEmpty) continue;
-      final type = typeRe.firstMatch(entry)?.group(1) ?? 'select';
-      groups.add(ProxyGroup(name: name, type: type, current: '', members: []));
-    }
-    return groups;
   }
 
   @override

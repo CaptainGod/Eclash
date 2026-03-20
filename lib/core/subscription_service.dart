@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -30,7 +31,9 @@ class SubscriptionService {
         const Duration(seconds: 15),
       );
       if (response.statusCode == 200) {
-        final patched = _patchConfig(response.body);
+        // 强制 UTF-8 解码：Dart http 包在服务器未声明 charset 时对 text/* 默认使用
+        // ISO-8859-1，会把多字节 UTF-8 序列（中文、emoji）逐字节拆散成乱码。
+        final patched = _patchConfig(utf8.decode(response.bodyBytes));
         final file = await getConfigFile();
         await file.writeAsString(patched);
         await saveCode(codeOrUrl);
