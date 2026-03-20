@@ -9,6 +9,8 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.Os
+import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import java.io.File
 
@@ -24,6 +26,7 @@ class EclashVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var mihomoProcess: Process? = null
+    private var tun2socksProcess: Process? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -40,19 +43,48 @@ class EclashVpnService : VpnService() {
         createNotificationChannel()
         startForeground(1, buildNotification())
 
-        vpnInterface = Builder()
+        // 排除本应用自身流量，防止 mihomo 出站流量被 VPN 再次捕获形成路由环
+        val pfd = Builder()
             .setSession("Eclash")
-            .addAddress("172.19.0.1", 30)
-            .addDnsServer("8.8.8.8")
-            .addDnsServer("1.1.1.1")
+            .addAddress("198.18.0.1", 16)
+            .addDnsServer("198.18.0.2")
             .addRoute("0.0.0.0", 0)
             .setMtu(1500)
-            .establish()
+            .addDisallowedApplication(packageName)
+            .establish() ?: run { stopSelf(); return }
 
-        val mihomoFile = getMihomoBinary()
-        if (mihomoFile != null && mihomoFile.exists()) {
-            mihomoFile.setExecutable(true)
-            mihomoProcess = ProcessBuilder(mihomoFile.absolutePath, "-f", configPath)
+        vpnInterface = pfd
+
+        // 清除 CLOEXEC 标志，让子进程能继承此 fd
+        try {
+            val flags = Os.fcntl(pfd.fileDescriptor, OsConstants.F_GETFD, 0)
+            Os.fcntl(pfd.fileDescriptor, OsConstants.F_SETFD,
+                flags and OsConstants.FD_CLOEXEC.inv())
+        } catch (_: Exception) {}
+
+        val tunFd = pfd.fd
+
+        // 启动 mihomo（HTTP + SOCKS5 代理模式，不使用 TUN）
+        val mihomo = getBinaryFile("libmihomo.so")
+        if (mihomo != null) {
+            mihomoProcess = ProcessBuilder(mihomo.absolutePath, "-f", configPath)
+                .redirectErrorStream(true)
+                .start()
+        }
+
+        // 等待 mihomo 启动完成
+        Thread.sleep(1500)
+
+        // 启动 tun2socks：将 TUN fd 的流量转发到 mihomo 的 SOCKS5 端口
+        // 流量路径: 其他 App → VPN TUN → tun2socks → mihomo:7891 → 代理服务器
+        val tun2socks = getBinaryFile("libtun2socks.so")
+        if (tun2socks != null) {
+            tun2socksProcess = ProcessBuilder(
+                tun2socks.absolutePath,
+                "-device", "fd://$tunFd",
+                "-proxy", "socks5://127.0.0.1:7891",
+                "-loglevel", "warning"
+            )
                 .redirectErrorStream(true)
                 .start()
         }
@@ -60,19 +92,22 @@ class EclashVpnService : VpnService() {
         isRunning = true
     }
 
-    private fun getMihomoBinary(): File? {
+    private fun getBinaryFile(libName: String): File? {
         return try {
-            val appInfo = packageManager.getApplicationInfo(packageName, 0)
-            // 用反射读取 nativeLibDir，绕过 Kotlin 编译器的类型解析问题
+            val appInfo = packageManager.getApplicationInfo(packageName, PackageManager.GET_META_DATA)
             val nativeDir = appInfo.javaClass.getField("nativeLibDir").get(appInfo) as? String
                 ?: return null
-            File(nativeDir, "libmihomo.so")
-        } catch (e: Exception) {
-            null
-        }
+            val file = File(nativeDir, libName)
+            if (file.exists()) {
+                file.setExecutable(true)
+                file
+            } else null
+        } catch (_: Exception) { null }
     }
 
     private fun stopVpn() {
+        tun2socksProcess?.destroy()
+        tun2socksProcess = null
         mihomoProcess?.destroy()
         mihomoProcess = null
         vpnInterface?.close()

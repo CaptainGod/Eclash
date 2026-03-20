@@ -26,9 +26,24 @@ class NodesPage extends StatelessWidget {
         ],
       ),
       body: groups.isEmpty
-          ? const Center(
-              child: Text('没有可用的策略组',
-                  style: TextStyle(color: Colors.white54)))
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        color: Colors.orange, size: 48),
+                    const SizedBox(height: 16),
+                    Text(
+                      state.configError ?? '没有找到策略组',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white54, fontSize: 14),
+                    ),
+                  ],
+                ),
+              ),
+            )
           : ListView.builder(
               padding: const EdgeInsets.all(16),
               itemCount: groups.length,

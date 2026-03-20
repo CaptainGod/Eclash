@@ -15,6 +15,7 @@ class AppState extends ChangeNotifier {
   List<String> _groupOrder = [];   // 从 YAML 读取的原始顺序
   String? _savedCode;
   String _mode = 'rule';           // direct / rule / global
+  String? _configError;            // 节点加载错误信息
 
   bool get proxyEnabled => _proxyEnabled;
   bool get loading => _loading;
@@ -22,6 +23,7 @@ class AppState extends ChangeNotifier {
   String get mode => _mode;
   String? get savedCode => _savedCode;
   bool get hasConfig => _savedCode != null;
+  String? get configError => _configError;
 
   /// 按 YAML 原始顺序返回策略组
   List<ProxyGroup> get orderedGroups {
@@ -45,8 +47,8 @@ class AppState extends ChangeNotifier {
       final file = await _sub.getConfigFile();
       if (!file.existsSync()) return;
       final content = await file.readAsString();
-      final yaml = loadYaml(content);
-      final groups = yaml['proxy-groups'];
+      final doc = loadYaml(content);
+      final groups = doc['proxy-groups'];
       if (groups is YamlList) {
         _groupOrder = groups
             .where((g) => g is YamlMap && g['name'] != null)
@@ -110,15 +112,39 @@ class AppState extends ChangeNotifier {
     await _mihomo.setMode(_mode);
   }
 
-  /// 未连接时从本地 YAML 解析节点列表（仅用于展示，不调用 API）
+  /// 未连接时从本地 YAML 解析节点列表
   Future<void> loadGroupsFromConfig() async {
+    _configError = null;
     try {
       final file = await _sub.getConfigFile();
-      if (!file.existsSync()) return;
+      if (!file.existsSync()) {
+        _configError = '配置文件不存在，请重新下载订阅';
+        notifyListeners();
+        return;
+      }
+
       final content = await file.readAsString();
-      final yaml = loadYaml(content);
-      final rawGroups = yaml['proxy-groups'];
-      if (rawGroups is! YamlList) return;
+      dynamic doc;
+      try {
+        doc = loadYaml(content);
+      } catch (e) {
+        _configError = 'YAML 解析失败：$e';
+        notifyListeners();
+        return;
+      }
+
+      // 尝试 proxy-groups（标准格式）和 proxy-group（旧格式）
+      final rawGroups = doc['proxy-groups'] ?? doc['proxy-group'];
+      if (rawGroups == null) {
+        _configError = '配置文件中没有找到 proxy-groups，请检查订阅格式';
+        notifyListeners();
+        return;
+      }
+      if (rawGroups is! YamlList) {
+        _configError = 'proxy-groups 格式错误';
+        notifyListeners();
+        return;
+      }
 
       final result = <String, ProxyGroup>{};
       final order = <String>[];
@@ -127,10 +153,10 @@ class AppState extends ChangeNotifier {
         final name = g['name']?.toString() ?? '';
         if (name.isEmpty) continue;
         final type = g['type']?.toString() ?? 'Selector';
-        final proxies = (g['proxies'] as YamlList?)
-                ?.map((e) => e.toString())
-                .toList() ??
-            [];
+        final proxiesRaw = g['proxies'];
+        final proxies = proxiesRaw is YamlList
+            ? proxiesRaw.map((e) => e.toString()).toList()
+            : <String>[];
         result[name] = ProxyGroup(
           name: name,
           type: type,
@@ -139,10 +165,17 @@ class AppState extends ChangeNotifier {
         );
         order.add(name);
       }
+
+      if (result.isEmpty) {
+        _configError = '策略组列表为空';
+      }
       _groups = result;
       _groupOrder = order;
       notifyListeners();
-    } catch (_) {}
+    } catch (e) {
+      _configError = '加载失败：$e';
+      notifyListeners();
+    }
   }
 
   void _setLoading(bool value, String message) {

@@ -41,45 +41,27 @@ class SubscriptionService {
     }
   }
 
-  String _patchConfig(String yaml) {
-    var result = yaml;
+  /// 只追加最小必要字段，避免破坏原始 YAML 结构
+  String _patchConfig(String original) {
+    final lines = <String>[];
 
-    // REST API（节点切换必须）
-    if (!result.contains('external-controller')) {
-      result += '\nexternal-controller: 127.0.0.1:9090\n';
+    // external-controller：节点切换 REST API
+    if (!original.contains('external-controller')) {
+      lines.add('external-controller: "127.0.0.1:9090"');
     }
 
-    // 混合端口（Windows/macOS 系统代理）
-    if (!result.contains('mixed-port') && !result.contains('port:')) {
-      result += 'mixed-port: 7890\n';
+    // SOCKS5 端口：供 Android tun2socks 使用
+    if (!original.contains('socks-port')) {
+      lines.add('socks-port: 7891');
     }
 
-    // Android TUN 模式配置（mihomo 将接管路由）
-    if (!result.contains('tun:') && Platform.isAndroid) {
-      result += '''
-tun:
-  enable: true
-  stack: system
-  auto-route: true
-  auto-detect-interface: true
-  dns-hijack:
-    - any:53
-''';
+    // HTTP 混合端口：供 Windows/macOS 系统代理使用
+    if (!original.contains('mixed-port') && !original.contains('port:')) {
+      lines.add('mixed-port: 7890');
     }
 
-    // DNS（确保解析正常）
-    if (!result.contains('dns:')) {
-      result += '''
-dns:
-  enable: true
-  listen: 0.0.0.0:53
-  nameserver:
-    - 8.8.8.8
-    - 1.1.1.1
-''';
-    }
-
-    return result;
+    if (lines.isEmpty) return original;
+    return '$original\n${lines.join('\n')}\n';
   }
 
   Future<bool> configExists() async {
