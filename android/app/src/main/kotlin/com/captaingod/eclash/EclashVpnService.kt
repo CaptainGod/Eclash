@@ -9,7 +9,6 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.system.Os
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import java.io.File
@@ -55,8 +54,8 @@ class EclashVpnService : VpnService() {
         vpnInterface = pfd
 
         // 2. 清除 FD_CLOEXEC，让 mihomo 子进程继承此 fd
-        val fdFlags = Os.fcntl(pfd.fileDescriptor, OsConstants.F_GETFD, 0)
-        Os.fcntl(pfd.fileDescriptor, OsConstants.F_SETFD, fdFlags and OsConstants.FD_CLOEXEC.inv())
+        // Os.fcntl 是 @hide API，通过反射调用绕过编译限制
+        clearCloseOnExec(pfd)
 
         // 3. 将 fd 注入配置，写入 filesDir（不用 cacheDir，避免被系统清除）
         val runtimeConfig = buildRuntimeConfig(configPath, pfd.fd)
@@ -128,6 +127,20 @@ class EclashVpnService : VpnService() {
         val tmp = File(filesDir, "runtime_config.yaml")
         tmp.writeText(out.joinToString("\n"))
         return tmp.absolutePath
+    }
+
+    private fun clearCloseOnExec(pfd: ParcelFileDescriptor) {
+        try {
+            val osClass = Class.forName("android.system.Os")
+            val fcntl = osClass.getMethod(
+                "fcntl",
+                java.io.FileDescriptor::class.java,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+            )
+            val flags = fcntl.invoke(null, pfd.fileDescriptor, OsConstants.F_GETFD, 0) as Int
+            fcntl.invoke(null, pfd.fileDescriptor, OsConstants.F_SETFD, flags and OsConstants.FD_CLOEXEC.inv())
+        } catch (_: Exception) {}
     }
 
     private fun getBinaryFile(libName: String): File? {
