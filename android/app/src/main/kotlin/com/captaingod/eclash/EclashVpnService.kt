@@ -48,15 +48,30 @@ class EclashVpnService : VpnService() {
             .setMtu(1500)
             .establish()
 
-        // 启动 mihomo 子进程（使用 TUN 模式）
-        val mihomo = File(applicationInfo.nativeLibDir, "libclash.so")
-        if (mihomo.exists()) {
-            mihomoProcess = ProcessBuilder(mihomo.absolutePath, "-f", configPath)
+        // 从 assets 复制 mihomo 到可执行目录
+        val mihomoFile = prepareMihomoBinary()
+        if (mihomoFile != null) {
+            mihomoProcess = ProcessBuilder(mihomoFile.absolutePath, "-f", configPath)
                 .redirectErrorStream(true)
                 .start()
         }
 
         isRunning = true
+    }
+
+    private fun prepareMihomoBinary(): File? {
+        return try {
+            val dest = File(filesDir, "mihomo")
+            if (!dest.exists()) {
+                assets.open("mihomo/mihomo-android").use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                dest.setExecutable(true)
+            }
+            dest
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun stopVpn() {
