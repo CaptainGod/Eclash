@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:yaml/yaml.dart';
 
 class SubscriptionService {
   static const String _prefix = 'https://1814840116.v.123pan.cn/1814840116/';
@@ -45,17 +46,60 @@ class SubscriptionService {
     }
   }
 
+  /// 从配置的 proxy-providers 直接下载节点名称列表（走直连，App 流量已绕过 VPN）。
+  /// [configDoc]：已解析的 YAML 文档。
+  /// 返回所有提供商的代理节点名，供离线预填策略组使用。
+  Future<List<String>> fetchProviderProxyNames(dynamic configDoc) async {
+    final names = <String>[];
+
+    // 内联 proxies（直接写在配置里的节点）
+    final inline = configDoc['proxies'];
+    if (inline is YamlList) {
+      for (final p in inline) {
+        if (p is YamlMap) {
+          final n = p['name']?.toString();
+          if (n != null && n.isNotEmpty) names.add(n);
+        }
+      }
+    }
+
+    // proxy-providers（机场订阅 URL）
+    final providers = configDoc['proxy-providers'];
+    if (providers is YamlMap) {
+      for (final prov in providers.values) {
+        if (prov is! YamlMap) continue;
+        final url = prov['url']?.toString();
+        if (url == null || !url.startsWith('http')) continue;
+        try {
+          final res = await http
+              .get(Uri.parse(url))
+              .timeout(const Duration(seconds: 15));
+          if (res.statusCode != 200) continue;
+          final doc = loadYaml(utf8.decode(res.bodyBytes));
+          final proxies = doc['proxies'];
+          if (proxies is YamlList) {
+            for (final p in proxies) {
+              if (p is YamlMap) {
+                final n = p['name']?.toString();
+                if (n != null && n.isNotEmpty) names.add(n);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    return names;
+  }
+
   /// 向订阅配置追加运行所需的最小字段，不破坏原始 YAML 结构。
-  /// tun: 段不在此注入——它在 VpnService 启动时携带实际 fd 动态写入。
   String _patchConfig(String original) {
     final lines = <String>[];
 
-    // REST API：节点切换 / 模式切换
     if (!original.contains('external-controller')) {
       lines.add('external-controller: "127.0.0.1:9090"');
     }
 
-    // DNS：TUN 模式必须启用，否则域名无法解析
     if (!original.contains('dns:')) {
       lines.addAll([
         'dns:',

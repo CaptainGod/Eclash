@@ -22,10 +22,27 @@ class NodesPage extends StatelessWidget {
             IconButton(
               icon: const Icon(Icons.refresh, color: Colors.white70),
               onPressed: () => state.refreshGroups(),
+            )
+          else if (!state.prefetchingNodes)
+            IconButton(
+              icon: const Icon(Icons.cloud_download_outlined, color: Colors.white70),
+              tooltip: '重新拉取节点',
+              onPressed: () => state.loadGroupsFromConfig(),
             ),
         ],
       ),
-      body: groups.isEmpty
+      body: state.prefetchingNodes && groups.isEmpty
+          ? const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: Colors.blueAccent),
+                  SizedBox(height: 16),
+                  Text('正在加载节点...', style: TextStyle(color: Colors.white54)),
+                ],
+              ),
+            )
+          : groups.isEmpty
           ? Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),

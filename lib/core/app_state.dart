@@ -11,6 +11,7 @@ class AppState extends ChangeNotifier {
 
   bool _proxyEnabled = false;
   bool _loading = false;
+  bool _prefetchingNodes = false;
   String _statusMessage = '未连接';
   Map<String, ProxyGroup> _groups = {};
   List<String> _groupOrder = [];
@@ -21,13 +22,12 @@ class AppState extends ChangeNotifier {
 
   bool get proxyEnabled => _proxyEnabled;
   bool get loading => _loading;
+  bool get prefetchingNodes => _prefetchingNodes;
   String get statusMessage => _statusMessage;
   String get mode => _mode;
   String? get savedCode => _savedCode;
   bool get hasConfig => _savedCode != null;
   String? get configError => _configError;
-
-  /// 是否有可离线预选的节点（proxy-providers 配置在连接前没有节点）。
   bool get hasOfflineNodes =>
       _groups.values.any((g) => g.members.isNotEmpty);
 
@@ -92,7 +92,6 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    // 等待 mihomo REST API 就绪（最长 15s），每秒轮询一次
     bool apiReady = false;
     for (var i = 0; i < 15; i++) {
       await Future.delayed(const Duration(seconds: 1));
@@ -113,7 +112,6 @@ class AppState extends ChangeNotifier {
     _pollForNodes();
   }
 
-  /// 后台轮询节点（proxy-providers 需要联网拉取，可能需要 5~30s）。
   Future<void> _pollForNodes() async {
     for (var i = 0; i < 60; i++) {
       if (!_proxyEnabled) return;
@@ -131,7 +129,6 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// 每 3 秒轮询 mihomo 进程是否存活，检测静默崩溃。
   void _startHealthCheck() {
     _healthTimer?.cancel();
     _healthTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
@@ -221,16 +218,87 @@ class AppState extends ChangeNotifier {
         order.add(name);
       }
 
-      if (result.isEmpty) {
-        _configError = '连接后可加载 proxy-providers 节点';
-      }
       _groups = result;
       _groupOrder = order;
-      notifyListeners();
+
+      // 若所有组的成员都为空（proxy-providers 配置），在后台拉取实际节点
+      final needsPrefetch = result.values.every((g) => g.members.isEmpty);
+      if (needsPrefetch && result.isNotEmpty) {
+        notifyListeners();
+        _prefetchProviderNodes(doc, result, order);
+      } else {
+        notifyListeners();
+      }
     } catch (e) {
       _configError = '加载失败：$e';
       notifyListeners();
     }
+  }
+
+  /// 后台从 proxy-providers URL 拉取节点，按各策略组的 filter 正则分配成员。
+  /// App 流量已通过 addDisallowedApplication 绕过 VPN，本方法始终走直连。
+  Future<void> _prefetchProviderNodes(
+    dynamic doc,
+    Map<String, ProxyGroup> groups,
+    List<String> order,
+  ) async {
+    _prefetchingNodes = true;
+    _configError = null;
+    notifyListeners();
+
+    final allNames = await _sub.fetchProviderProxyNames(doc);
+
+    if (allNames.isEmpty) {
+      _prefetchingNodes = false;
+      _configError = '节点列表为空，请检查 proxy-providers 订阅地址';
+      notifyListeners();
+      return;
+    }
+
+    final rawGroups = doc['proxy-groups'];
+    if (rawGroups is! YamlList) {
+      _prefetchingNodes = false;
+      notifyListeners();
+      return;
+    }
+
+    for (final g in rawGroups) {
+      if (g is! YamlMap) continue;
+      final name = g['name']?.toString() ?? '';
+      if (!groups.containsKey(name)) continue;
+      if (g['include-all'] != true) continue;
+
+      final filterStr = g['filter']?.toString();
+      List<String> filtered;
+      if (filterStr != null && filterStr.isNotEmpty) {
+        try {
+          final re = RegExp(filterStr);
+          filtered = allNames.where((n) => re.hasMatch(n)).toList();
+        } catch (_) {
+          filtered = allNames;
+        }
+      } else {
+        filtered = allNames;
+      }
+
+      // 保留原有静态成员（其他组的引用），把实际节点追加在后
+      final existing = groups[name]!.members;
+      final merged = [
+        ...existing,
+        ...filtered.where((n) => !existing.contains(n)),
+      ];
+      groups[name] = ProxyGroup(
+        name: name,
+        type: groups[name]!.type,
+        current: merged.isNotEmpty ? merged.first : '',
+        members: merged,
+      );
+    }
+
+    _groups = groups;
+    _groupOrder = order;
+    _prefetchingNodes = false;
+    notifyListeners();
   }
 
   @override
