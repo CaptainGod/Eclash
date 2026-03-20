@@ -44,34 +44,21 @@ class EclashVpnService : VpnService() {
             .setSession("Eclash")
             .addAddress("172.19.0.1", 30)
             .addDnsServer("8.8.8.8")
+            .addDnsServer("1.1.1.1")
             .addRoute("0.0.0.0", 0)
             .setMtu(1500)
             .establish()
 
-        // 从 assets 复制 mihomo 到可执行目录
-        val mihomoFile = prepareMihomoBinary()
-        if (mihomoFile != null) {
+        // 从 nativeLibDir 获取 mihomo（Android 已将 libmihomo.so 解压到此目录，可直接执行）
+        val mihomoFile = File(applicationInfo.nativeLibDir, "libmihomo.so")
+        if (mihomoFile.exists()) {
+            mihomoFile.setExecutable(true)
             mihomoProcess = ProcessBuilder(mihomoFile.absolutePath, "-f", configPath)
                 .redirectErrorStream(true)
                 .start()
         }
 
         isRunning = true
-    }
-
-    private fun prepareMihomoBinary(): File? {
-        return try {
-            val dest = File(filesDir, "mihomo")
-            if (!dest.exists()) {
-                assets.open("mihomo/mihomo-android").use { input ->
-                    dest.outputStream().use { output -> input.copyTo(output) }
-                }
-                dest.setExecutable(true)
-            }
-            dest
-        } catch (e: Exception) {
-            null
-        }
     }
 
     private fun stopVpn() {

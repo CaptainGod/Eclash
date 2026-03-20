@@ -8,15 +8,16 @@ BASE_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION
 
 case $PLATFORM in
   android)
-    echo "Downloading mihomo for Android (linux-arm64)..."
-    mkdir -p assets/mihomo
+    echo "Downloading mihomo for Android (arm64-v8a)..."
+    # 放入 jniLibs：Android 会自动解压到可执行目录，绕过 W^X 限制
+    mkdir -p android/app/src/main/jniLibs/arm64-v8a
     curl -L --fail \
       "${BASE_URL}/mihomo-linux-arm64-${MIHOMO_VERSION}.gz" \
       -o mihomo.gz
     gunzip mihomo.gz
-    mv mihomo assets/mihomo/mihomo-android
-    chmod +x assets/mihomo/mihomo-android
-    echo "Done: mihomo-android -> assets/mihomo/"
+    # 重命名为 .so 让 Android 将其视为 native library 并正确提取
+    mv mihomo android/app/src/main/jniLibs/arm64-v8a/libmihomo.so
+    echo "Done: libmihomo.so -> android/app/src/main/jniLibs/arm64-v8a/"
     ;;
 
   windows)
