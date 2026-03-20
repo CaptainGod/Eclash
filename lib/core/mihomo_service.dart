@@ -1,8 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 import '../models/proxy_node.dart';
 import 'subscription_service.dart';
 
@@ -12,9 +10,7 @@ class MihomoService {
   static const MethodChannel _vpnChannel =
       MethodChannel('com.captaingod.eclash/vpn');
 
-  Process? _process;
   bool _running = false;
-
   bool get isRunning => _running;
 
   Map<String, String> get _headers => {
@@ -24,59 +20,42 @@ class MihomoService {
 
   Future<bool> start() async {
     if (_running) return true;
-
-    final sub = SubscriptionService();
-    final configFile = await sub.getConfigFile();
+    final configFile = await SubscriptionService().getConfigFile();
     if (!configFile.existsSync()) return false;
+    final ok = await _vpnChannel.invokeMethod<bool>(
+      'startVpn',
+      {'configPath': configFile.path},
+    );
+    _running = ok ?? false;
+    return _running;
+  }
 
+  Future<void> stop() async {
     try {
-      if (Platform.isAndroid) {
-        // Android：通过 MethodChannel 调用原生 VpnService
-        final ok = await _vpnChannel.invokeMethod<bool>(
-          'startVpn',
-          {'configPath': configFile.path},
-        );
-        _running = ok ?? false;
-      } else {
-        // Windows / macOS：子进程模式
-        final binaryPath = await _getMihomoBinaryPath();
-        _process = await Process.start(binaryPath, ['-f', configFile.path]);
-        await Future.delayed(const Duration(milliseconds: 800));
-        _running = true;
-        await _enableSystemProxy();
-      }
-      return _running;
+      await _vpnChannel.invokeMethod('stopVpn');
+    } catch (_) {}
+    _running = false;
+  }
+
+  /// mihomo 进程是否仍在运行（用于崩溃检测）。
+  Future<bool> checkRunning() async {
+    try {
+      return await _vpnChannel.invokeMethod<bool>('isRunning') ?? false;
     } catch (_) {
       return false;
     }
   }
 
-  Future<void> stop() async {
+  /// mihomo REST API 是否已就绪（mihomo 启动需要数百毫秒，API 就绪才可操作）。
+  Future<bool> isApiReady() async {
     try {
-      if (Platform.isAndroid) {
-        await _vpnChannel.invokeMethod('stopVpn');
-      } else {
-        await _disableSystemProxy();
-        _process?.kill();
-        _process = null;
-      }
-    } catch (_) {}
-    _running = false;
-  }
-
-  Future<String> _getMihomoBinaryPath() async {
-    final dir = await getApplicationSupportDirectory();
-    final ext = Platform.isWindows ? '.exe' : '';
-    final dest = File('${dir.path}/mihomo$ext');
-
-    if (!dest.existsSync()) {
-      final bytes = await rootBundle.load('assets/mihomo/mihomo$ext');
-      await dest.writeAsBytes(bytes.buffer.asUint8List());
-      if (!Platform.isWindows) {
-        await Process.run('chmod', ['+x', dest.path]);
-      }
+      final res = await http
+          .get(Uri.parse('$_apiBase/version'), headers: _headers)
+          .timeout(const Duration(seconds: 1));
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
     }
-    return dest.path;
   }
 
   Future<Map<String, ProxyGroup>> getGroups() async {
@@ -119,40 +98,5 @@ class MihomoService {
         body: jsonEncode({'mode': mode}),
       );
     } catch (_) {}
-  }
-
-  Future<void> _enableSystemProxy() async {
-    if (Platform.isMacOS) {
-      await Process.run('networksetup',
-          ['-setwebproxy', 'Wi-Fi', '127.0.0.1', '7890']);
-      await Process.run('networksetup',
-          ['-setsecurewebproxy', 'Wi-Fi', '127.0.0.1', '7890']);
-    } else if (Platform.isWindows) {
-      await Process.run('reg', [
-        'add',
-        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-        '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '1', '/f'
-      ]);
-      await Process.run('reg', [
-        'add',
-        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-        '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', '127.0.0.1:7890', '/f'
-      ]);
-    }
-  }
-
-  Future<void> _disableSystemProxy() async {
-    if (Platform.isMacOS) {
-      await Process.run(
-          'networksetup', ['-setwebproxystate', 'Wi-Fi', 'off']);
-      await Process.run(
-          'networksetup', ['-setsecurewebproxystate', 'Wi-Fi', 'off']);
-    } else if (Platform.isWindows) {
-      await Process.run('reg', [
-        'add',
-        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-        '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f'
-      ]);
-    }
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:yaml/yaml.dart';
 import '../models/proxy_node.dart';
@@ -12,10 +13,11 @@ class AppState extends ChangeNotifier {
   bool _loading = false;
   String _statusMessage = '未连接';
   Map<String, ProxyGroup> _groups = {};
-  List<String> _groupOrder = [];   // 从 YAML 读取的原始顺序
+  List<String> _groupOrder = [];
   String? _savedCode;
-  String _mode = 'rule';           // direct / rule / global
-  String? _configError;            // 节点加载错误信息
+  String _mode = 'rule';
+  String? _configError;
+  Timer? _healthTimer;
 
   bool get proxyEnabled => _proxyEnabled;
   bool get loading => _loading;
@@ -25,7 +27,6 @@ class AppState extends ChangeNotifier {
   bool get hasConfig => _savedCode != null;
   String? get configError => _configError;
 
-  /// 按 YAML 原始顺序返回策略组
   List<ProxyGroup> get orderedGroups {
     if (_groupOrder.isEmpty) return _groups.values.toList();
     final result = <ProxyGroup>[];
@@ -41,13 +42,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 解析配置文件中 proxy-groups 的顺序
   Future<void> _loadGroupOrder() async {
     try {
       final file = await _sub.getConfigFile();
       if (!file.existsSync()) return;
-      final content = await file.readAsString();
-      final doc = loadYaml(content);
+      final doc = loadYaml(await file.readAsString());
       final groups = doc['proxy-groups'];
       if (groups is YamlList) {
         _groupOrder = groups
@@ -58,38 +57,97 @@ class AppState extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<bool> downloadSubscription(String code) async {
+  Future<bool> downloadSubscription(String codeOrUrl) async {
     _setLoading(true, '正在下载配置...');
-    final ok = await _sub.downloadConfig(code);
+    final ok = await _sub.downloadConfig(codeOrUrl);
     if (ok) {
-      _savedCode = code;
+      _savedCode = codeOrUrl;
       await _loadGroupOrder();
     }
-    _setLoading(false, ok ? '配置下载成功' : '下载失败，请检查订阅码');
+    _setLoading(false, ok ? '配置下载成功' : '下载失败，请检查订阅地址');
     return ok;
   }
 
   Future<void> toggleProxy() async {
     if (_loading) return;
+
     if (_proxyEnabled) {
       _setLoading(true, '正在关闭...');
+      _stopHealthCheck();
       await _mihomo.stop();
       _proxyEnabled = false;
       _groups = {};
       _setLoading(false, '未连接');
-    } else {
-      _setLoading(true, '正在连接...');
-      final ok = await _mihomo.start();
-      if (ok) {
-        _proxyEnabled = true;
-        await Future.delayed(const Duration(milliseconds: 1200));
-        await refreshGroups();
-        await _syncMode();
-        _setLoading(false, '已连接');
-      } else {
-        _setLoading(false, '连接失败，请先导入订阅');
-      }
+      return;
     }
+
+    // ── 连接流程 ──────────────────────────────────────────────
+    _setLoading(true, '正在连接...');
+    final ok = await _mihomo.start();
+    if (!ok) {
+      _setLoading(false, '连接失败，请先导入订阅');
+      return;
+    }
+
+    // 等待 mihomo REST API 就绪（最长 15s），每秒轮询一次
+    bool apiReady = false;
+    for (var i = 0; i < 15; i++) {
+      await Future.delayed(const Duration(seconds: 1));
+      if (!await _mihomo.checkRunning()) break; // 进程已崩溃，提前退出
+      if (await _mihomo.isApiReady()) { apiReady = true; break; }
+    }
+
+    if (!apiReady) {
+      await _mihomo.stop();
+      _setLoading(false, '连接失败，mihomo 未能启动');
+      return;
+    }
+
+    // API 就绪 → 更新连接状态，放开按钮，后台继续加载节点
+    _proxyEnabled = true;
+    await _syncMode();
+    _setLoading(false, '已连接 · 加载节点...');
+    _startHealthCheck();
+    _pollForNodes(); // 不 await，后台加载 proxy-providers 节点
+  }
+
+  /// 后台轮询节点（proxy-providers 需要联网拉取，可能需要 5~30s）。
+  /// 每秒查一次 REST API，最多等 60s。
+  Future<void> _pollForNodes() async {
+    for (var i = 0; i < 60; i++) {
+      if (!_proxyEnabled) return;
+      await refreshGroups();
+      if (_groups.isNotEmpty) {
+        _statusMessage = '已连接';
+        notifyListeners();
+        return;
+      }
+      await Future.delayed(const Duration(seconds: 1));
+    }
+    // 超时：连接仍有效，但节点始终未出现（网络问题或配置无 proxy-providers）
+    if (_proxyEnabled) {
+      _statusMessage = '已连接';
+      notifyListeners();
+    }
+  }
+
+  /// 每 3 秒轮询 mihomo 进程是否存活，检测静默崩溃。
+  void _startHealthCheck() {
+    _healthTimer?.cancel();
+    _healthTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (!_proxyEnabled) { _stopHealthCheck(); return; }
+      if (!await _mihomo.checkRunning()) {
+        _proxyEnabled = false;
+        _groups = {};
+        _stopHealthCheck();
+        _setLoading(false, '连接已断开');
+      }
+    });
+  }
+
+  void _stopHealthCheck() {
+    _healthTimer?.cancel();
+    _healthTimer = null;
   }
 
   Future<void> refreshGroups() async {
@@ -112,7 +170,6 @@ class AppState extends ChangeNotifier {
     await _mihomo.setMode(_mode);
   }
 
-  /// 未连接时从本地 YAML 解析节点列表
   Future<void> loadGroupsFromConfig() async {
     _configError = null;
     try {
@@ -123,20 +180,18 @@ class AppState extends ChangeNotifier {
         return;
       }
 
-      final content = await file.readAsString();
       dynamic doc;
       try {
-        doc = loadYaml(content);
+        doc = loadYaml(await file.readAsString());
       } catch (e) {
         _configError = 'YAML 解析失败：$e';
         notifyListeners();
         return;
       }
 
-      // 尝试 proxy-groups（标准格式）和 proxy-group（旧格式）
       final rawGroups = doc['proxy-groups'] ?? doc['proxy-group'];
       if (rawGroups == null) {
-        _configError = '配置文件中没有找到 proxy-groups，请检查订阅格式';
+        _configError = '配置文件中没有找到 proxy-groups';
         notifyListeners();
         return;
       }
@@ -167,7 +222,7 @@ class AppState extends ChangeNotifier {
       }
 
       if (result.isEmpty) {
-        _configError = '策略组列表为空';
+        _configError = '连接后可加载 proxy-providers 节点';
       }
       _groups = result;
       _groupOrder = order;
@@ -176,6 +231,12 @@ class AppState extends ChangeNotifier {
       _configError = '加载失败：$e';
       notifyListeners();
     }
+  }
+
+  @override
+  void dispose() {
+    _stopHealthCheck();
+    super.dispose();
   }
 
   void _setLoading(bool value, String message) {

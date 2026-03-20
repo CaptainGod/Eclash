@@ -26,7 +26,6 @@ class EclashVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var mihomoProcess: Process? = null
-    private var tun2socksProcess: Process? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -43,7 +42,7 @@ class EclashVpnService : VpnService() {
         createNotificationChannel()
         startForeground(1, buildNotification())
 
-        // 排除本应用自身流量，防止 mihomo 出站流量被 VPN 再次捕获形成路由环
+        // 1. 创建 TUN 接口，排除本应用自身流量防止路由环
         val pfd = Builder()
             .setSession("Eclash")
             .addAddress("198.18.0.1", 16)
@@ -55,41 +54,80 @@ class EclashVpnService : VpnService() {
 
         vpnInterface = pfd
 
-        // 清除 CLOEXEC 标志，让子进程能继承此 fd
-        try {
-            val flags = Os.fcntl(pfd.fileDescriptor, OsConstants.F_GETFD, 0)
-            Os.fcntl(pfd.fileDescriptor, OsConstants.F_SETFD,
-                flags and OsConstants.FD_CLOEXEC.inv())
-        } catch (_: Exception) {}
+        // 2. 清除 FD_CLOEXEC，让 mihomo 子进程继承此 fd
+        val fdFlags = Os.fcntl(pfd.fileDescriptor, OsConstants.F_GETFD, 0)
+        Os.fcntl(pfd.fileDescriptor, OsConstants.F_SETFD, fdFlags and OsConstants.FD_CLOEXEC.inv())
 
-        val tunFd = pfd.fd
+        // 3. 将 fd 注入配置，写入 filesDir（不用 cacheDir，避免被系统清除）
+        val runtimeConfig = buildRuntimeConfig(configPath, pfd.fd)
 
-        // 启动 mihomo（HTTP + SOCKS5 代理模式，不使用 TUN）
-        val mihomo = getBinaryFile("libmihomo.so")
-        if (mihomo != null) {
-            mihomoProcess = ProcessBuilder(mihomo.absolutePath, "-f", configPath)
-                .redirectErrorStream(true)
-                .start()
+        // 4. 启动 mihomo，-d 指定 home 目录，rule-providers 等相对路径才能正确解析
+        val mihomo = getBinaryFile("libmihomo.so") ?: run {
+            pfd.close()
+            stopSelf()
+            return
         }
-
-        // 等待 mihomo 启动完成
-        Thread.sleep(1500)
-
-        // 启动 tun2socks：将 TUN fd 的流量转发到 mihomo 的 SOCKS5 端口
-        // 流量路径: 其他 App → VPN TUN → tun2socks → mihomo:7891 → 代理服务器
-        val tun2socks = getBinaryFile("libtun2socks.so")
-        if (tun2socks != null) {
-            tun2socksProcess = ProcessBuilder(
-                tun2socks.absolutePath,
-                "-device", "fd://$tunFd",
-                "-proxy", "socks5://127.0.0.1:7891",
-                "-loglevel", "warning"
-            )
-                .redirectErrorStream(true)
-                .start()
-        }
+        mihomoProcess = ProcessBuilder(
+            mihomo.absolutePath,
+            "-d", filesDir.absolutePath,   // home dir：rule-providers / store-selected / store-fake-ip 都写这里
+            "-f", runtimeConfig
+        )
+            .redirectErrorStream(true)
+            .start()
 
         isRunning = true
+
+        // 5. 后台线程监控 mihomo 进程，崩溃时自动清理状态
+        Thread {
+            try {
+                mihomoProcess?.waitFor()
+            } catch (_: InterruptedException) {
+                return@Thread
+            }
+            // 走到这里说明进程已退出；若非主动 stop（isRunning 仍为 true）则是崩溃
+            if (isRunning) {
+                isRunning = false
+                vpnInterface?.close()
+                vpnInterface = null
+                mihomoProcess = null
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    /**
+     * 剥离原配置中已有的 tun: 块（如有），追加以当前 TUN fd 为核心的原生 TUN 配置。
+     * 写入 filesDir/runtime_config.yaml 并返回路径。
+     */
+    private fun buildRuntimeConfig(basePath: String, tunFd: Int): String {
+        val lines = File(basePath).readLines()
+        val out = mutableListOf<String>()
+        var inTunBlock = false
+
+        for (line in lines) {
+            val isRootKey = line.isNotEmpty() && !line[0].isWhitespace() && !line.startsWith('#')
+            when {
+                line.startsWith("tun:") -> inTunBlock = true
+                inTunBlock && isRootKey -> { inTunBlock = false; out.add(line) }
+                !inTunBlock -> out.add(line)
+            }
+        }
+
+        out += listOf(
+            "",
+            "tun:",
+            "  enable: true",
+            "  stack: gvisor",
+            "  dns-hijack:",
+            "    - any:53",
+            "  auto-route: false",   // 路由已由 VpnService.Builder 接管
+            "  fd: $tunFd",          // 直接复用 Android VPN 创建的 TUN fd
+        )
+
+        val tmp = File(filesDir, "runtime_config.yaml")
+        tmp.writeText(out.joinToString("\n"))
+        return tmp.absolutePath
     }
 
     private fun getBinaryFile(libName: String): File? {
@@ -98,16 +136,11 @@ class EclashVpnService : VpnService() {
             val nativeDir = appInfo.javaClass.getField("nativeLibDir").get(appInfo) as? String
                 ?: return null
             val file = File(nativeDir, libName)
-            if (file.exists()) {
-                file.setExecutable(true)
-                file
-            } else null
+            if (file.exists()) { file.setExecutable(true); file } else null
         } catch (_: Exception) { null }
     }
 
     private fun stopVpn() {
-        tun2socksProcess?.destroy()
-        tun2socksProcess = null
         mihomoProcess?.destroy()
         mihomoProcess = null
         vpnInterface?.close()
@@ -128,8 +161,7 @@ class EclashVpnService : VpnService() {
                 CHANNEL_ID, "Eclash VPN",
                 NotificationManager.IMPORTANCE_LOW
             )
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 

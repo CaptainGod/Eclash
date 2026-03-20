@@ -22,8 +22,9 @@ class SubscriptionService {
     return File('${dir.path}/config.yaml');
   }
 
-  Future<bool> downloadConfig(String code) async {
-    final url = '$_prefix$code';
+  /// [codeOrUrl]：短码（自动拼前缀）或完整 http/https URL。
+  Future<bool> downloadConfig(String codeOrUrl) async {
+    final url = codeOrUrl.startsWith('http') ? codeOrUrl : '$_prefix$codeOrUrl';
     try {
       final response = await http.get(Uri.parse(url)).timeout(
         const Duration(seconds: 15),
@@ -32,7 +33,7 @@ class SubscriptionService {
         final patched = _patchConfig(response.body);
         final file = await getConfigFile();
         await file.writeAsString(patched);
-        await saveCode(code);
+        await saveCode(codeOrUrl);
         return true;
       }
       return false;
@@ -41,23 +42,26 @@ class SubscriptionService {
     }
   }
 
-  /// 只追加最小必要字段，避免破坏原始 YAML 结构
+  /// 向订阅配置追加运行所需的最小字段，不破坏原始 YAML 结构。
+  /// tun: 段不在此注入——它在 VpnService 启动时携带实际 fd 动态写入。
   String _patchConfig(String original) {
     final lines = <String>[];
 
-    // external-controller：节点切换 REST API
+    // REST API：节点切换 / 模式切换
     if (!original.contains('external-controller')) {
       lines.add('external-controller: "127.0.0.1:9090"');
     }
 
-    // SOCKS5 端口：供 Android tun2socks 使用
-    if (!original.contains('socks-port')) {
-      lines.add('socks-port: 7891');
-    }
-
-    // HTTP 混合端口：供 Windows/macOS 系统代理使用
-    if (!original.contains('mixed-port') && !original.contains('port:')) {
-      lines.add('mixed-port: 7890');
+    // DNS：TUN 模式必须启用，否则域名无法解析
+    if (!original.contains('dns:')) {
+      lines.addAll([
+        'dns:',
+        '  enable: true',
+        '  enhanced-mode: fake-ip',
+        '  nameserver:',
+        '    - 8.8.8.8',
+        '    - 1.1.1.1',
+      ]);
     }
 
     if (lines.isEmpty) return original;

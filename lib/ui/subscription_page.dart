@@ -41,13 +41,13 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('订阅码', style: TextStyle(color: Colors.white70, fontSize: 14)),
+            const Text('订阅地址', style: TextStyle(color: Colors.white70, fontSize: 14)),
             const SizedBox(height: 8),
             TextField(
               controller: _controller,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
-                hintText: '请输入订阅码',
+                hintText: '订阅码或完整订阅 URL',
                 hintStyle: const TextStyle(color: Colors.white30),
                 filled: true,
                 fillColor: const Color(0xFF16213E),
