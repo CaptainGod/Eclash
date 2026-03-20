@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class SubscriptionService {
   // 固定前缀，替换为你的实际订阅服务器地址
-  static const String _prefix = 'https://sub.example.com/sub/';
+  static const String _prefix = 'https://1814840116.v.123pan.cn/1814840116/';
   static const String _prefKey = 'subscription_code';
 
   Future<String?> getSavedCode() async {
