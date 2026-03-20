@@ -8,15 +8,15 @@ BASE_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION
 
 case $PLATFORM in
   android)
-    echo "Downloading mihomo for Android (arm64-v8a)..."
-    mkdir -p android/app/src/main/jniLibs/arm64-v8a
+    echo "Downloading mihomo for Android (linux-arm64)..."
+    mkdir -p assets/mihomo
     curl -L --fail \
-      "${BASE_URL}/mihomo-android-arm64-v8a-${MIHOMO_VERSION}.gz" \
+      "${BASE_URL}/mihomo-linux-arm64-${MIHOMO_VERSION}.gz" \
       -o mihomo.gz
     gunzip mihomo.gz
-    mv mihomo android/app/src/main/jniLibs/arm64-v8a/libclash.so
-    chmod +x android/app/src/main/jniLibs/arm64-v8a/libclash.so
-    echo "Done: libclash.so -> android/app/src/main/jniLibs/arm64-v8a/"
+    mv mihomo assets/mihomo/mihomo-android
+    chmod +x assets/mihomo/mihomo-android
+    echo "Done: mihomo-android -> assets/mihomo/"
     ;;
 
   windows)
